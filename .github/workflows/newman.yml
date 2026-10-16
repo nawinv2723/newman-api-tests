@@ -1,31 +1,152 @@
-name: Payment API Tests
+name: SEPA and Invoice Payment API Tests
 
 on:
+  workflow_dispatch:
+
+  schedule:
+    # Runs daily at 9:00 AM IST
+    - cron: '30 3 * * *'
+
   push:
     branches:
       - main
 
-  schedule:
-    - cron: '0 9 * * *'
-
-  workflow_dispatch:
+permissions:
+  contents: read
 
 jobs:
-  newman-test:
+  payment-api-tests:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      # Step 1: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # Step 2: Install Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Step 3: Install Newman and HTML reporter
       - name: Install Newman
-        run: npm install -g newman newman-reporter-html
+        run: |
+          npm install -g newman newman-reporter-htmlextra
 
+      # Step 4: Verify required files
+      - name: Verify Postman Files
+        run: |
+          test -f "Test API (2.1.0 v) Payment.postman_collection.json"
+          test -f "Environment_4_14.postman_environment.json"
+          test -f "data.csv"
+          echo "All required files found."
+
+      # Step 5: Execute Direct Debit SEPA and Invoice
       - name: Run Payment API Tests
-        run: newman run "Test API (2.1.0 v) Payment.postman_collection.json" -e "Environment_4_14.postman_environment.json" -d "data.csv" -r cli,html --reporter-html-export newman-report.html
+        id: payment_tests
+        continue-on-error: true
+        run: |
+          mkdir -p reports
 
-      - name: Upload Test Report
+          newman run \
+            "Test API (2.1.0 v) Payment.postman_collection.json" \
+            -e "Environment_4_14.postman_environment.json" \
+            -d "data.csv" \
+            --folder "Direct Debit SEPA" \
+            --folder "Invoice" \
+            --reporters cli,htmlextra,json \
+            --reporter-htmlextra-export reports/payment-report.html \
+            --reporter-json-export reports/newman-results.json
+
+      # Step 6: Verify that requests were executed
+      - name: Validate Test Execution
+        id: validate_tests
+        if: always()
+        continue-on-error: true
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+
+          const file = 'reports/newman-results.json';
+
+          if (!fs.existsSync(file)) {
+            console.error('ERROR: Newman JSON report was not generated.');
+            process.exit(1);
+          }
+
+          const report = JSON.parse(fs.readFileSync(file, 'utf8'));
+          const stats = report.run.stats;
+          const requests = stats.requests.total;
+          const assertions = stats.assertions.total;
+          const failures = stats.assertions.failed;
+
+          console.log(`Requests executed: ${requests}`);
+          console.log(`Assertions executed: ${assertions}`);
+          console.log(`Failed assertions: ${failures}`);
+
+          if (requests === 0) {
+            console.error('ERROR: No API requests were executed.');
+            process.exit(1);
+          }
+
+          console.log('Request execution verified.');
+          NODE
+
+      # Step 7: Upload HTML report to GitHub
+      - name: Upload Payment Test Report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: newman-report
-          path: newman-report.html
+          name: SEPA-Invoice-Payment-Report
+          path: reports/payment-report.html
+          if-no-files-found: warn
+          retention-days: 7
+
+      # Step 8: Email the HTML report
+      - name: Email Payment Test Report
+        if: always() && hashFiles('reports/payment-report.html') != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.MAIL_SERVER }}
+          server_port: ${{ secrets.MAIL_PORT }}
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "SEPA and Invoice API Test Report"
+          to: ${{ secrets.MAIL_TO }}
+          from: ${{ secrets.MAIL_FROM }}
+          body: |
+            Hello,
+
+            The automated payment API tests have completed.
+
+            Tests:
+            - Direct Debit SEPA
+            - Invoice
+
+            Please find the Newman HTML report attached.
+
+            Repository: ${{ github.repository }}
+
+            Workflow run:
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Regards,
+            GitHub Actions
+          attachments: reports/payment-report.html
+
+      # Step 9: Set final workflow status
+      - name: Check Final Test Status
+        if: always()
+        env:
+          TEST_OUTCOME: ${{ steps.payment_tests.outcome }}
+          VALIDATION_OUTCOME: ${{ steps.validate_tests.outcome }}
+        run: |
+          if [ "$TEST_OUTCOME" != "success" ] || \
+             [ "$VALIDATION_OUTCOME" != "success" ]; then
+            echo "Payment tests failed or no requests were executed."
+            exit 1
+          fi
+
+          echo "Payment tests completed successfully."
