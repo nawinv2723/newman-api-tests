@@ -48,16 +48,14 @@ jobs:
               response = iteration.get('response', {})
               status_code = response.get('code', 'N/A')
 
-              # Get TID from response
               try:
-                  body = json.loads(response.get('stream', {}).get('data', b'{}').decode())
+                  body = json.loads(bytes(response.get('stream', {}).get('data', [])).decode())
                   tid = body.get('transaction', {}).get('tid', 'N/A')
                   txn_status = body.get('transaction', {}).get('status', 'N/A')
               except:
                   tid = 'N/A'
                   txn_status = 'N/A'
 
-              # Check assertions
               assertions = iteration.get('assertions', [])
               test_status = 'PASS'
               failed_tests = []
@@ -79,7 +77,6 @@ jobs:
 
           df = pd.DataFrame(rows)
 
-          # Style Excel
           with pd.ExcelWriter('payment-test-report.xlsx', engine='openpyxl') as writer:
               df.to_excel(writer, index=False, sheet_name='Test Results')
               workbook = writer.book
@@ -107,29 +104,6 @@ jobs:
 
           print('Excel report created!')
           EOF
-
-      - name: Send Email with Excel Report
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 587
-          username: ${{ secrets.EMAIL_USERNAME }}
-          password: ${{ secrets.EMAIL_PASSWORD }}
-          subject: "Payment API Test Report - ${{ github.run_number }}"
-          body: |
-            Hi Team,
-
-            Please find the Payment API Test Report attached.
-
-            Run Number: ${{ github.run_number }}
-            Date: ${{ github.event.head_commit.timestamp }}
-            Status: Check attached Excel report
-
-            Regards,
-            GitHub Actions
-          to: YOUR_EMAIL@thunderbird.com
-          from: ${{ secrets.EMAIL_USERNAME }}
-          attachments: payment-test-report.xlsx
 
       - name: Upload Excel Report
         uses: actions/upload-artifact@v4
